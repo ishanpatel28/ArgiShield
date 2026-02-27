@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AgriShield — Results</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600&family=Source+Sans+3:wght@300;400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/css/main.css" />
+</head>
+<body>
+  <div class="page-wrap">
+
+    <header class="site-header">
+      <div class="header-inner">
+        <a href="/" class="logo">
+          <span class="logo-mark">&#9678;</span>
+          <span class="logo-text">AgriShield</span>
+        </a>
+        <a href="/" class="nav-back">&#8592; New analysis</a>
+      </div>
+    </header>
+
+    {# ── Shortcut references ───────────────────────────────── #}
+    {% set frs      = result.risk_result.farm_risk_summary %}
+    {% set fhs      = result.hedge_result.farm_hedge_summary %}
+    {% set advisory = result.advisory %}
+    {% set farm     = result.farm_input.farm %}
+    {% set meta     = result.meta %}
+    {% set seasonal = result.seasonal_outlook %}
+    {% set enso_obj = seasonal.get('enso', {}) %}
+    {% set outlook  = seasonal.get('seasonal_outlook', {}) %}
+    {% set fcst     = seasonal.get('forecast_14d', {}) %}
+    {% set anom     = seasonal.get('current_anomaly', {}) %}
+    {% set sev      = (frs.overall_severity or 'unknown') | lower %}
+
+    <main class="main-content results-main">
+
+      {# ── Farm header ─────────────────────────────────────── #}
+      <section class="results-header">
+        <div class="results-location">
+          {% if farm.location_raw %}
+            <h1>{{ farm.location_raw }}</h1>
+          {% else %}
+            <h1>{{ "%.4f" | format(farm.lat | float) }}, {{ "%.4f" | format(farm.lon | float) }}</h1>
+          {% endif %}
+          <p class="results-meta-line">
+            {{ result.farm_input.crops | map(attribute='name') | join(', ') }}
+            &nbsp;&middot;&nbsp;
+            ${{ (frs.total_full_revenue or 0) | int | format_thousands }} expected revenue
+            &nbsp;&middot;&nbsp;
+            {{ enso_obj.get('enso_desc', 'Neutral conditions') }}
+          </p>
+        </div>
+        <div class="severity-badge severity-{{ sev }}">
+          {{ sev | title }} risk
+        </div>
+      </section>
+
+      {# ── SECTION A: Plain-language hedging summary ────────── #}
+      <section class="summary-section">
+        <h2 class="section-label">What you should do this season</h2>
+        <div class="summary-card">
+          <p class="summary-text">{{ advisory.short_summary or 'Analysis complete. See breakdown below.' }}</p>
+          {% if not advisory.get('granite_used', False) %}
+          <p class="granite-note">
+            IBM Granite unavailable &mdash; summary generated from quantitative model output.
+            <a href="#pipeline-meta">Details</a>
+          </p>
+          {% endif %}
+        </div>
+      </section>
+
+      {# ── Risk numbers row ─────────────────────────────────── #}
+      <section class="risk-numbers">
+        <div class="risk-stat">
+          <span class="stat-label">Expected revenue</span>
+          <span class="stat-value">${{ (frs.total_full_revenue or 0) | int | format_thousands }}</span>
+        </div>
+        <div class="risk-stat risk-stat-warn">
+          <span class="stat-label">Median season loss</span>
+          <span class="stat-value">${{ (frs.total_p50_loss or 0) | int | format_thousands }}</span>
+          <span class="stat-sub">{{ frs.total_p50_loss_pct or 0 }}% of revenue</span>
+        </div>
+        <div class="risk-stat risk-stat-danger">
+          <span class="stat-label">Worst-case (1-in-10)</span>
+          <span class="stat-value">${{ (frs.total_p10_loss or 0) | int | format_thousands }}</span>
+          <span class="stat-sub">{{ frs.total_p10_loss_pct or 0 }}% of revenue</span>
+        </div>
+        <div class="risk-stat">
+          <span class="stat-label">Hedge premium est.</span>
+          <span class="stat-value">${{ (fhs.get('total_hedge_premium', 0) or 0) | int | format_thousands }}</span>
+          <span class="stat-sub">{{ fhs.get('hedge_cost_pct_revenue', 0) or 0 }}% of revenue</span>
+        </div>
+      </section>
+
+      {# ── Per-crop breakdown ───────────────────────────────── #}
+      <section class="crops-section">
+        <h2 class="section-label">Crop-by-crop breakdown</h2>
+        <div class="crops-grid">
+          {% for crop_entry in result.farm_input.crops %}
+            {% set name    = crop_entry.name %}
+            {% set ls      = result.risk_result.loss_scenarios.get(name, {}) %}
+            {% set sc      = ls.get('scenarios', {}) %}
+            {% set p50     = sc.get('median_p50', {}) %}
+            {% set p10     = sc.get('bad_year_p10', {}) %}
+            {% set mc_dist = result.monte_carlo.get(name, {}).get('yield_distribution', {}) %}
+            {% set crop_sev = (ls.get('severity', 'unknown') or 'unknown') | lower %}
+            {% set recs    = result.hedge_result.recommendations %}
+            {% set rec     = namespace(found={}) %}
+            {% for r in recs %}
+              {% if r.crop == name %}{% set rec.found = r %}{% endif %}
+            {% endfor %}
+
+            <div class="crop-card severity-border-{{ crop_sev }}">
+              <div class="crop-card-header">
+                <span class="crop-name">{{ name }}</span>
+                <span class="crop-acres">{{ crop_entry.acres | int }} acres</span>
+                <span class="crop-severity crop-sev-{{ crop_sev }}">{{ crop_sev | title }}</span>
+              </div>
+
+              <div class="crop-financials">
+                <div class="crop-stat">
+                  <span>Full revenue</span>
+                  <strong>${{ (ls.get('full_revenue', 0) or 0) | int | format_thousands }}</strong>
+                </div>
+                <div class="crop-stat crop-stat-warn">
+                  <span>Median loss (P50)</span>
+                  <strong>${{ (p50.get('loss', 0) or 0) | int | format_thousands }}</strong>
+                  {% if p50.get('yield_pct') %}<em>{{ p50.yield_pct }}% yield</em>{% endif %}
+                </div>
+                <div class="crop-stat crop-stat-danger">
+                  <span>Worst-case loss (P10)</span>
+                  <strong>${{ (p10.get('loss', 0) or 0) | int | format_thousands }}</strong>
+                  {% if p10.get('yield_pct') %}<em>{{ p10.yield_pct }}% yield</em>{% endif %}
+                </div>
+              </div>
+
+              {% if mc_dist %}
+              <div class="yield-dist">
+                <span class="dist-label">Yield distribution (% of normal)</span>
+                <div class="dist-bar-wrap">
+                  <div class="dist-bar" style="--p10:{{ mc_dist.get('p10', 40) }}; --p50:{{ mc_dist.get('p50', 70) }}; --p90:{{ mc_dist.get('p90', 90) }};"></div>
+                </div>
+                <div class="dist-ticks">
+                  <span>P10: {{ mc_dist.get('p10', '—') }}%</span>
+                  <span>P50: {{ mc_dist.get('p50', '—') }}%</span>
+                  <span>P90: {{ mc_dist.get('p90', '—') }}%</span>
+                </div>
+              </div>
+              {% endif %}
+
+              {% if rec.found %}
+              <div class="crop-hedge">
+                <span class="hedge-label">Hedge action</span>
+                <p class="hedge-text">{{ rec.found.get('recommendation', 'No recommendation available.') }}</p>
+              </div>
+              {% endif %}
+            </div>
+          {% endfor %}
+        </div>
+      </section>
+
+      {# ── SECTION B: Download full report ─────────────────── #}
+      <section class="download-section">
+        <div class="download-card">
+          <div class="download-text">
+            <h2>Download full report</h2>
+            <p>Complete risk breakdown, crop-by-crop analysis, Monte Carlo distributions,
+               and hedge recommendations — formatted for print.</p>
+          </div>
+          <button class="btn-download" id="pdf-btn" onclick="downloadPDF()">
+            <span id="pdf-label">&#8615;&nbsp;Download PDF</span>
+            <span id="pdf-spinner" class="spinner" style="display:none;"></span>
+          </button>
+        </div>
+      </section>
+
+      {# ── Seasonal context ─────────────────────────────────── #}
+      <section class="context-section">
+        <h2 class="section-label">Seasonal context</h2>
+        <div class="context-grid">
+          <div class="context-card">
+            <h3>ENSO</h3>
+            <p class="context-val">{{ enso_obj.get('enso_desc', '—') }}</p>
+            <p class="context-sub">ONI: {{ enso_obj.get('oni_value', '—') }}</p>
+          </div>
+          <div class="context-card">
+            <h3>30-day anomaly</h3>
+            <p class="context-val">{{ (anom.get('anomaly_signal', '—') or '—') | title }}</p>
+            <p class="context-sub">
+              Precip: {{ anom.get('precip_anomaly_pct', '—') }}%
+              &nbsp;|&nbsp;
+              Temp: +{{ anom.get('temp_anomaly_c', '—') }}&deg;C
+            </p>
+          </div>
+          <div class="context-card">
+            <h3>14-day forecast</h3>
+            <p class="context-val">{{ fcst.get('total_precip_mm', '—') }} mm rain</p>
+            <p class="context-sub">
+              Heat stress days: {{ fcst.get('heat_stress_days', 0) }}
+              &nbsp;|&nbsp;
+              Dry days: {{ fcst.get('dry_days_forecast', '—') }}
+            </p>
+          </div>
+          <div class="context-card">
+            <h3>Seasonal outlook</h3>
+            <p class="context-val">
+              {% if outlook.get('drought_risk_elevated') %}Elevated drought risk{% else %}Normal conditions{% endif %}
+            </p>
+            <p class="context-sub">
+              Temp &gt; normal: {{ outlook.get('temp_above_normal_prob_pct', '—') }}%
+              &nbsp;|&nbsp;
+              Precip &lt; normal: {{ outlook.get('precip_below_normal_prob_pct', '—') }}%
+            </p>
+          </div>
+        </div>
+        {% if outlook.get('risk_narrative') %}
+        <p class="outlook-narrative">{{ outlook.risk_narrative }}</p>
+        {% endif %}
+      </section>
+
+      {# ── Pipeline meta ────────────────────────────────────── #}
+      <section class="meta-section" id="pipeline-meta">
+        <p class="meta-text">
+          Analysis completed in {{ meta.elapsed_seconds }}s
+          &nbsp;&middot;&nbsp;
+          IBM Granite:
+          {% if meta.get('granite_call1_used') or meta.get('granite_call2_used') %}
+            active
+          {% else %}
+            <span>unavailable &mdash; Monte Carlo fallback used</span>
+          {% endif %}
+          {% if meta.get('errors') and meta.errors | length > 0 %}
+          &nbsp;&middot;&nbsp;
+          <span class="meta-warn">{{ meta.errors | length }} non-fatal warning(s)</span>
+          {% endif %}
+        </p>
+      </section>
+
+    </main>
+
+    <footer class="site-footer">
+      <p>AgriShield &middot; IBM Watsonx Hackathon 2026</p>
+    </footer>
+
+  </div>
+
+  <script>
+    function downloadPDF() {
+      const btn   = document.getElementById('pdf-btn');
+      const label = document.getElementById('pdf-label');
+      const spin  = document.getElementById('pdf-spinner');
+      btn.disabled      = true;
+      label.style.display = 'none';
+      spin.style.display  = 'inline-block';
+
+      fetch('/pdf/{{ session_id }}', { method: 'POST' })
+        .then(r => {
+          if (!r.ok) return r.json().then(j => Promise.reject(j.error || 'PDF error'));
+          return r.blob();
+        })
+        .then(blob => {
+          const url  = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href  = url;
+          link.download = 'agrishield_report.pdf';
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          URL.revokeObjectURL(url);
+        })
+        .catch(err => alert('PDF generation failed: ' + err))
+        .finally(() => {
+          btn.disabled        = false;
+          label.style.display = 'inline';
+          spin.style.display  = 'none';
+        });
+    }
+  </script>
+</body>
+</html>

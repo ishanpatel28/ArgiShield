@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AgriShield — Climate Risk for Farmers</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600&family=Source+Sans+3:wght@300;400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/css/main.css" />
+</head>
+<body>
+  <div class="page-wrap">
+
+    <header class="site-header">
+      <div class="header-inner">
+        <div class="logo">
+          <span class="logo-mark">&#9678;</span>
+          <span class="logo-text">AgriShield</span>
+        </div>
+        <p class="tagline">Climate risk quantified. Hedges built. Plain language.</p>
+      </div>
+    </header>
+
+    <main class="main-content">
+      <section class="hero">
+        <h1>Protect your season<br><em>before it starts.</em></h1>
+        <p class="hero-sub">
+          Enter your farm location and crops. AgriShield runs a full climate-risk model
+          — soil, ENSO, 30 years of weather — and tells you exactly what to hedge,
+          in plain English.
+        </p>
+      </section>
+
+      {% if error %}
+      <div class="alert alert-error">{{ error }}</div>
+      {% endif %}
+
+      <section class="form-section">
+        <form id="analyze-form" action="/analyze" method="POST">
+
+          <div class="form-group">
+            <label for="location">Farm location <span class="label-hint">(optional label)</span></label>
+            <input type="text" id="location" name="location"
+                   placeholder="e.g., NW Arkansas, or leave blank"
+                   autocomplete="off" />
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label for="lat">Latitude <span class="required">*</span></label>
+              <input type="number" id="lat" name="lat" step="0.000001"
+                     placeholder="36.5457" required />
+            </div>
+            <div class="form-group">
+              <label for="lon">Longitude <span class="required">*</span></label>
+              <input type="number" id="lon" name="lon" step="0.000001"
+                     placeholder="-93.8571" required />
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="crops">
+              Crops <span class="required">*</span>
+              <span class="label-hint">— comma-separated</span>
+            </label>
+            <input type="text" id="crops" name="crops"
+                   placeholder="Rice, Wheat, Soybeans"
+                   required autocomplete="off" />
+          </div>
+
+          <div class="form-group">
+            <label for="acres">
+              Acres per crop <span class="required">*</span>
+              <span class="label-hint">— same order, comma-separated</span>
+            </label>
+            <input type="text" id="acres" name="acres"
+                   placeholder="50, 20, 30"
+                   required autocomplete="off" />
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label for="plant_start">Planting starts <span class="required">*</span></label>
+              <input type="date" id="plant_start" name="plant_start"
+                     value="2026-03-01" required />
+            </div>
+            <div class="form-group">
+              <label for="plant_end">Planting ends <span class="required">*</span></label>
+              <input type="date" id="plant_end" name="plant_end"
+                     value="2026-06-01" required />
+            </div>
+          </div>
+
+          <div class="form-row form-row-slim">
+            <div class="form-group">
+              <label for="risk_aversion">
+                Risk tolerance
+                <span class="label-hint">— 0 = seek risk, 100 = avoid all risk</span>
+              </label>
+              <div class="slider-wrap">
+                <input type="range" id="risk_aversion" name="risk_aversion"
+                       min="0" max="100" value="60"
+                       oninput="document.getElementById('ra_val').textContent = this.value" />
+                <span class="slider-val" id="ra_val">60</span>
+              </div>
+            </div>
+            <div class="form-group">
+              <label for="hedge_budget_pct">Hedge budget (% of revenue)</label>
+              <input type="number" id="hedge_budget_pct" name="hedge_budget_pct"
+                     min="0" max="100" step="0.25" value="3.0" />
+            </div>
+          </div>
+
+          <button type="submit" class="btn-analyze" id="submit-btn">
+            <span id="btn-label">Analyze my farm</span>
+            <span id="btn-spinner" class="spinner" style="display:none;"></span>
+          </button>
+
+        </form>
+
+        <p class="form-note">
+          Analysis runs a 10,000-simulation Monte Carlo model over 30 years of NASA
+          climate data. It takes 15–60 seconds depending on API response times.
+        </p>
+      </section>
+
+      <section class="how-it-works">
+        <h2>How it works</h2>
+        <ol class="steps">
+          <li><strong>Soil + anomaly</strong> — SoilGrids pH, SOC, clay. Current 30-day precipitation vs. 30-year normal.</li>
+          <li><strong>Seasonal outlook</strong> — ENSO phase (La Niña / El Niño / Neutral) + 14-day forecast.</li>
+          <li><strong>Monte Carlo</strong> — 10,000 simulations weighted by ENSO history and current anomaly signal.</li>
+          <li><strong>Risk scoring</strong> — IBM Granite reasons over crop-specific stress data to produce loss estimates.</li>
+          <li><strong>Hedge recommendation</strong> — Black-Scholes protective puts sized to your budget and risk tolerance.</li>
+        </ol>
+      </section>
+
+    </main>
+
+    <footer class="site-footer">
+      <p>Built for the IBM Watsonx Hackathon 2026 &middot; Powered by IBM Granite</p>
+    </footer>
+
+  </div>
+
+  <script>
+    const form = document.getElementById('analyze-form');
+    form.addEventListener('submit', function(e) {
+      const btn   = document.getElementById('submit-btn');
+      const label = document.getElementById('btn-label');
+      const spin  = document.getElementById('btn-spinner');
+      btn.disabled = true;
+      label.textContent = 'Analyzing…';
+      spin.style.display = 'inline-block';
+
+      // Use fetch to post and redirect on success
+      e.preventDefault();
+      const data = new FormData(form);
+      fetch('/analyze', { method: 'POST', body: data })
+        .then(r => r.json())
+        .then(json => {
+          if (json.error) {
+            btn.disabled = false;
+            label.textContent = 'Analyze my farm';
+            spin.style.display = 'none';
+            showError(json.error);
+          } else {
+            window.location.href = json.redirect;
+          }
+        })
+        .catch(err => {
+          btn.disabled = false;
+          label.textContent = 'Analyze my farm';
+          spin.style.display = 'none';
+          showError('Request failed: ' + err);
+        });
+    });
+
+    function showError(msg) {
+      let el = document.querySelector('.alert.alert-error');
+      if (!el) {
+        el = document.createElement('div');
+        el.className = 'alert alert-error';
+        form.parentNode.insertBefore(el, form);
+      }
+      el.textContent = msg;
+      el.scrollIntoView({ behavior: 'smooth' });
+    }
+  </script>
+</body>
+</html>
