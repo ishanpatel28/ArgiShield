@@ -435,7 +435,7 @@ def _derive_planting_doy(
 # Step 4: Extract growing-season stress metrics
 # ---------------------------------------------------------------------------
 
-def extract_season_metrics(year_data: dict, crop_params: dict, planting_doy: int) -> dict:
+def extract_season_metrics(year_data: dict, crop_params: dict, planting_doy: int, historical_mean_precip: float = None) -> dict:
     """
     Compute growing-season stress metrics for one historical year.
 
@@ -498,8 +498,19 @@ def extract_season_metrics(year_data: dict, crop_params: dict, planting_doy: int
         if i < len(solar):
             avg_solar_vals.append(solar[i])
 
-    total_precip       = _safe_sum(season_precip)
-    precip_deficit_pct = ((total_precip - opt_rain) / opt_rain * 100.0) if opt_rain > 0 else 0.0
+    total_precip = _safe_sum(season_precip)
+
+    # Use local historical mean as baseline, NOT crop optimal.
+    # Comparing to crop optimal means arid regions (Kern County, 250mm/yr)
+    # always show -80% deficit → every sim hits the yield floor → P10=P50=P90.
+    # Instead: measure deviation from what this location *normally* gets.
+    # The gap between local norm and crop optimal becomes a permanent
+    # regional_drought_factor passed to compute_yield_loss_pct separately.
+    if historical_mean_precip and historical_mean_precip > 0:
+        precip_deficit_pct = ((total_precip - historical_mean_precip) / historical_mean_precip * 100.0)
+    else:
+        # Fallback to crop-optimal comparison if no historical mean available
+        precip_deficit_pct = ((total_precip - opt_rain) / opt_rain * 100.0) if opt_rain > 0 else 0.0
 
     return {
         "gdd_total":           round(gdd_total, 1),
@@ -523,6 +534,7 @@ def compute_yield_loss_pct(
     metrics:    dict,
     crop_params: dict,
     enso_bias:  float = 0.0,
+    regional_drought_factor: float = 0.0,
 ) -> float:
     """
     Translate season stress metrics into yield as % of normal.
@@ -554,23 +566,28 @@ def compute_yield_loss_pct(
     deficit_pct = metrics.get("precip_deficit_pct", 0.0)
     if not irrigated:
         if deficit_pct < 0:
-            drought_penalty = abs(deficit_pct) * 0.25
+            drought_penalty = abs(deficit_pct) * 0.10
             if abs(deficit_pct) > 30:
-                drought_penalty += (abs(deficit_pct) - 30) * 0.15
+                drought_penalty += (abs(deficit_pct) - 30) * 0.05
             score -= drought_penalty
         elif deficit_pct > 20:
             score -= (deficit_pct - 20) * 0.1   # mild waterlogging penalty
 
         # Consecutive dry streak — sustained drought worse than scattered dry days
         dry_streak = metrics.get("consecutive_dry_max", 0)
-        if dry_streak > 10:
-            score -= (dry_streak - 10) * 0.5
+        if dry_streak > 30:
+            score -= (dry_streak - 30) * 0.1
 
     # ENSO regional bias — now from seasonal_outlook regional table
     # e.g. delta region weak La Nina → -0.04 → score -= 4 points
     score += enso_bias * 100.0
 
-    return round(max(20.0, min(105.0, score)), 2)
+    # Regional drought factor: permanent penalty when local historical mean
+    # precip is below crop optimal. Capped at 25 points max so even very
+    # arid regions still show year-to-year variance.
+    score -= min(regional_drought_factor * 0.2, 8.0)
+
+    return round(max(35.0, min(105.0, score)), 2)
 
 
 # ---------------------------------------------------------------------------
@@ -688,10 +705,40 @@ def run_simulation(
     years   = list(year_weights.keys())
     weights = [year_weights[y] for y in years]
 
+    # Compute historical mean growing-season precip for this location.
+    # Used as the rainfall baseline so arid regions don't permanently
+    # show 80% deficit vs crop optimal and flatten all simulations.
+    opt_rain = crop_params.get("optimal_season_rain_mm", 500.0)
+    raw_precips = []
+    for y in years:
+        yd = historical[y]
+        precip_series = yd.get("PRECTOTCORR", [])
+        season_start  = planting_doy
+        season_end    = min(planting_doy + 150, 365)
+        season_p      = sum(
+            p for i, p in enumerate(precip_series)
+            if season_start <= (i + 1) <= season_end and p is not None
+        )
+        raw_precips.append(season_p)
+    historical_mean_precip = _safe_mean(raw_precips, default=opt_rain) if raw_precips else opt_rain
+
+    # Regional drought factor: permanent penalty when local climate is
+    # structurally drier than crop optimal. Scaled so a 50% deficit = 12.5 pts.
+    if historical_mean_precip < opt_rain:
+        regional_deficit_pct = (opt_rain - historical_mean_precip) / opt_rain * 100.0
+        regional_drought_factor = regional_deficit_pct * 0.25
+    else:
+        regional_drought_factor = 0.0
+
+    if regional_drought_factor > 0:
+        log.info("Regional drought factor: %.1f pts (local mean=%.0fmm  crop optimal=%.0fmm)",
+                 regional_drought_factor, historical_mean_precip, opt_rain)
+
     # Pre-compute metrics for all years once
     log.info("Pre-computing stress metrics for %d historical years...", len(years))
     metrics_cache = {
-        year: extract_season_metrics(historical[year], crop_params, planting_doy)
+        year: extract_season_metrics(historical[year], crop_params, planting_doy,
+                                     historical_mean_precip=historical_mean_precip)
         for year in years
     }
 
@@ -712,7 +759,7 @@ def run_simulation(
     for _ in range(n_simulations):
         sampled_year = random.choices(years, weights=weights, k=1)[0]
         noisy        = _add_noise(metrics_cache[sampled_year])
-        yield_pct    = compute_yield_loss_pct(noisy, crop_params, enso_bias)
+        yield_pct    = compute_yield_loss_pct(noisy, crop_params, enso_bias, regional_drought_factor)
         outcomes.append(yield_pct)
 
     outcomes.sort()
@@ -891,3 +938,4 @@ if __name__ == "__main__":
         print(f"  Anomaly      : {result['simulation_meta']['anomaly_signal']}")
 
     print("\n[Done]")
+    

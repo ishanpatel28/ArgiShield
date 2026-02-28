@@ -35,6 +35,11 @@ from typing import Optional
 
 import requests
 
+try:
+    from crop_intelligence import get_crop_params as _get_crop_params
+except ImportError:
+    _get_crop_params = None
+
 log = logging.getLogger("agrishield.market_data")
 
 _TIMEOUT = 15
@@ -316,17 +321,31 @@ def _no_futures_result(crop_name: str) -> dict:
             "recommended": False,   # directionally useful but unreliable
         })
 
+    # Pull revenue from crop_intelligence lookup table
+    revenue_per_acre = 800.0  # default fallback
+    typical_yield    = 80.0
+    if _get_crop_params is not None:
+        try:
+            cp = _get_crop_params(crop_name)
+            revenue_per_acre = cp.get("revenue_per_acre", 800.0)
+            typical_yield    = cp.get("typical_yield_per_acre", 80.0)
+        except Exception:
+            pass
+
+    log.info("Crop '%s' has no futures contract — revenue=$%.0f/acre from lookup", crop_name, revenue_per_acre)
+
     return {
-        "has_futures":   False,
-        "crop":          crop_name,
-        "ticker":        None,
-        "price_usd":     None,
-        "unit":          None,
-        "vol_proxy_pct": None,
-        "alternatives":  alternatives,
-        "note":          f"{crop_name} has no direct exchange-traded futures contract. "
-                         f"Granite will recommend alternative risk management strategies.",
-        "fetched_utc":   datetime.now(timezone.utc).isoformat(),
+        "has_futures":        False,
+        "crop":               crop_name,
+        "ticker":             None,
+        "price_usd":          None,
+        "unit":               None,
+        "vol_proxy_pct":      None,
+        "revenue_per_acre":   revenue_per_acre,
+        "typical_yield_per_acre": typical_yield,
+        "alternatives":       alternatives,
+        "note":               f"{crop_name} has no direct exchange-traded futures contract.",
+        "fetched_utc":        datetime.now(timezone.utc).isoformat(),
     }
 
 
@@ -359,7 +378,7 @@ def get_market_data_all_crops(crops: list) -> dict:
         market["acres"] = acres
 
         # Compute expected gross revenue for this crop at this farm
-        if market.get("has_futures") and market.get("revenue_per_acre"):
+        if market.get("revenue_per_acre"):
             crop_revenue = round(market["revenue_per_acre"] * acres, 2)
             market["expected_gross_revenue"] = crop_revenue
             total_revenue += crop_revenue

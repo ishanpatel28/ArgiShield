@@ -29,9 +29,9 @@ import requests
 log = logging.getLogger("agrishield.yield_risk")
 
 _WATSONX_URL        = "https://us-south.ml.cloud.ibm.com"
-_WATSONX_API_KEY    = "b3d5f298-5dd1-4f8d-a868-b3c4b223a517"
+_WATSONX_API_KEY    = "mSOreiGvCoHMN1IPW4opoGMGRNc_NFLn1dInxQ4t38YE"
 _WATSONX_PROJECT_ID = "e4164bef-4b12-4681-933c-d3ad03941cb5"
-_GRANITE_MODEL      = "ibm/granite-4-0-tiny-preview"
+_GRANITE_MODEL      = "ibm/granite-3-8b-instruct"
 _IAM_URL            = "https://iam.cloud.ibm.com/identity/token"
 _INFER_URL          = f"{_WATSONX_URL}/ml/v1/text/chat?version=2023-05-29"
 _TIMEOUT            = 60
@@ -511,3 +511,4 @@ if __name__ == "__main__":
     print(f"  Severity       : {s['overall_severity']}")
 
     print("\n[Done]")
+

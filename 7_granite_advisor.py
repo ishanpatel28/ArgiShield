@@ -2,26 +2,8 @@
 granite_advisor.py
 ==================
 AgriShield – Granite Call 2: Plain-Language Farmer Narrative
--------------------------------------------------------------
-Takes the full quantitative output (risk assessment + hedge recommendations)
-and asks Granite to produce:
-
-  1. A SHORT hedging summary (3-5 sentences, farmer-readable, no jargon)
-     — what the farmer should actually DO this season.
-
-  2. A DETAILED narrative breakdown (suitable for PDF report):
-     — seasonal context (ENSO, current anomaly)
-     — per-crop risk summary with reasoning
-     — specific hedge actions recommended
-     — what to watch for as the season progresses
-
-If Granite is unavailable, falls back to a structured template-based
-narrative using the quantitative data directly. Output is always complete.
-
-Dependencies: requests + standard library only.
 """
 
-import json
 import logging
 import os
 import re
@@ -33,20 +15,20 @@ import requests
 log = logging.getLogger("agrishield.granite_advisor")
 
 # ---------------------------------------------------------------------------
-# Watsonx config — reads from env first, falls back to hardcoded values
+# Watsonx config
 # ---------------------------------------------------------------------------
 
-_WATSONX_API_KEY    = os.getenv("WATSONX_API_KEY",    "b3d5f298-5dd1-4f8d-a868-b3c4b223a517")
-_WATSONX_PROJECT_ID = os.getenv("WATSONX_PROJECT_ID", "e4164bef-4b12-4681-933c-d3ad03941cb5")
-_GRANITE_MODEL      = "ibm/granite-4-0-tiny-preview"
 _WATSONX_URL        = "https://us-south.ml.cloud.ibm.com"
+_WATSONX_API_KEY    = "mSOreiGvCoHMN1IPW4opoGMGRNc_NFLn1dInxQ4t38YE"
+_WATSONX_PROJECT_ID = "e4164bef-4b12-4681-933c-d3ad03941cb5"
+_GRANITE_MODEL      = "ibm/granite-3-8b-instruct"
 _IAM_URL            = "https://iam.cloud.ibm.com/identity/token"
 _INFER_URL          = f"{_WATSONX_URL}/ml/v1/text/chat?version=2023-05-29"
 _TIMEOUT            = 60
 
 
 # ---------------------------------------------------------------------------
-# Watsonx helpers (same pattern as yield_risk.py)
+# Watsonx helpers
 # ---------------------------------------------------------------------------
 
 def _get_iam_token() -> Optional[str]:
@@ -62,6 +44,7 @@ def _get_iam_token() -> Optional[str]:
         )
         resp.raise_for_status()
         token = resp.json().get("access_token")
+        log.info("IAM token obtained")
         return token
     except Exception as exc:
         log.warning("IAM token failed: %s", exc)
@@ -97,6 +80,9 @@ def _call_granite(prompt: str, max_tokens: int = 800) -> Optional[str]:
         resp.raise_for_status()
         data = resp.json()
         return data["choices"][0]["message"]["content"]
+    except requests.HTTPError as exc:
+        log.warning("Granite Call 2 HTTP %s: %s", exc.response.status_code, exc.response.text[:200])
+        return None
     except Exception as exc:
         log.warning("Granite Call 2 failed: %s", exc)
         return None
@@ -112,13 +98,11 @@ def _build_advisory_prompt(
     hedge_result: dict,
     seasonal_outlook: dict,
 ) -> str:
-    prefs  = farm_input.get("preferences", {})
     crops  = farm_input.get("crops", [])
-    farm   = farm_input.get("farm", {})
     frs    = risk_result.get("farm_risk_summary", {})
     fhs    = hedge_result.get("farm_hedge_summary", {})
     recs   = hedge_result.get("recommendations", [])
-    enso   = seasonal_outlook.get("enso_desc", "neutral")
+    enso   = seasonal_outlook.get("enso", {}).get("enso_desc", "neutral")
     outlook_text = seasonal_outlook.get("seasonal_outlook", {}).get("risk_narrative", "")
 
     crop_lines = []
@@ -140,7 +124,7 @@ def _build_advisory_prompt(
 
     crops_block = "\n".join(crop_lines)
 
-    prompt = f"""You are AgriShield, a plain-language agricultural risk advisor.
+    return f"""You are AgriShield, a plain-language agricultural risk advisor.
 A farmer has the following climate risk profile for the upcoming season.
 Write in plain, direct language — no financial jargon, no filler phrases.
 
@@ -177,8 +161,6 @@ Write 4–6 paragraphs covering:
 
 Keep both sections factual and grounded. Avoid generic boilerplate."""
 
-    return prompt
-
 
 # ---------------------------------------------------------------------------
 # Template fallback (no Granite)
@@ -190,35 +172,27 @@ def _template_narrative(
     hedge_result: dict,
     seasonal_outlook: dict,
 ) -> tuple[str, str]:
-    """Returns (short_summary, detailed_narrative) as strings."""
-    frs  = risk_result.get("farm_risk_summary", {})
-    fhs  = hedge_result.get("farm_hedge_summary", {})
-    recs = hedge_result.get("recommendations", [])
-    enso = seasonal_outlook.get("enso_desc", "neutral conditions")
-    crops = farm_input.get("crops", [])
+    frs    = risk_result.get("farm_risk_summary", {})
+    fhs    = hedge_result.get("farm_hedge_summary", {})
+    recs   = hedge_result.get("recommendations", [])
+    enso   = seasonal_outlook.get("enso", {}).get("enso_desc", "neutral conditions")
+    crops  = farm_input.get("crops", [])
     ls_all = risk_result.get("loss_scenarios", {})
 
-    total_rev  = frs.get("total_full_revenue", 0)
     p50_loss   = frs.get("total_p50_loss", 0)
     p10_loss   = frs.get("total_p10_loss", 0)
     p50_pct    = frs.get("total_p50_loss_pct", 0)
     dominant   = frs.get("dominant_risk", "drought").replace("_", " ")
     severity   = frs.get("overall_severity", "moderate")
     total_prem = fhs.get("total_hedge_premium", 0)
-
-    # Short summary
     hedged_crops = fhs.get("crops_hedged_with_puts", [])
-    hedge_action = ""
-    if hedged_crops and total_prem > 0:
-        hedge_action = (
-            f"The most important action right now is to buy protective put contracts on "
-            f"{' and '.join(hedged_crops)}, costing approximately ${total_prem:,.0f} in total premium. "
-        )
-    else:
-        hedge_action = (
-            "Your crops lack direct futures coverage — focus on crop insurance and "
-            "locking in input costs before prices rise. "
-        )
+
+    hedge_action = (
+        f"The most important action right now is to buy protective put contracts on "
+        f"{' and '.join(hedged_crops)}, costing approximately ${total_prem:,.0f} in total premium. "
+        if hedged_crops and total_prem > 0
+        else "Your crops lack direct futures coverage — focus on crop insurance and locking in input costs before prices rise. "
+    )
 
     short_summary = (
         f"This season looks {severity} risk driven by {dominant}, amplified by {enso}. "
@@ -228,7 +202,6 @@ def _template_narrative(
         f"Act before planting — options premiums rise as the season progresses and uncertainty resolves."
     )
 
-    # Detailed narrative
     seasonal_para = (
         f"The current climate setup features {enso}. "
         f"{seasonal_outlook.get('seasonal_outlook', {}).get('risk_narrative', '')} "
@@ -247,49 +220,36 @@ def _template_narrative(
         p10  = sc.get("bad_year_p10", {}).get("loss", 0)
         sev  = ls.get("severity", "unknown")
         rec  = next((r for r in recs if r["crop"] == name), {})
-        hedge_text = rec.get("recommendation", "No hedge available.")
         crop_paras.append(
             f"{name} ({c['acres']} acres): Expected revenue ${fr:,.0f}. "
             f"Median loss ${p50:,.0f}, worst-case ${p10:,.0f}. Risk level: {sev}. "
-            f"Recommendation: {hedge_text}"
+            f"Recommendation: {rec.get('recommendation', 'No hedge available.')}"
         )
-
-    watch_para = (
-        "As the season progresses, monitor soil moisture weekly. "
-        "If a second consecutive dry month develops or a heat event exceeds 7 consecutive days "
-        "during the critical window, consider rolling your put options to a higher strike "
-        "or adding contracts. Conversely, if significant rain arrives in the first 45 days "
-        "of the growing season, you may be able to sell your puts back at a profit."
-    )
 
     detailed = "\n\n".join([
         "SEASONAL CONTEXT\n" + seasonal_para,
         "PER-CROP RISK\n" + "\n\n".join(crop_paras),
-        "WHAT TO WATCH\n" + watch_para,
+        "WHAT TO WATCH\nAs the season progresses, monitor soil moisture weekly. "
+        "If a second consecutive dry month develops or a heat event exceeds 7 consecutive days "
+        "during the critical window, consider rolling your put options to a higher strike or adding contracts. "
+        "Conversely, if significant rain arrives in the first 45 days of the growing season, "
+        "you may be able to sell your puts back at a profit.",
     ])
 
     return short_summary, detailed
 
 
 def _parse_granite_response(text: str) -> tuple[str, str]:
-    """Extract SECTION 1 and SECTION 2 from Granite response."""
-    short = ""
-    detailed = ""
-
-    # Try to split on section markers
     s1_match = re.search(r"SECTION\s*1[^:]*:(.*?)(?:SECTION\s*2|$)", text, re.DOTALL | re.IGNORECASE)
     s2_match = re.search(r"SECTION\s*2[^:]*:(.*?)$", text, re.DOTALL | re.IGNORECASE)
 
-    if s1_match:
-        short = s1_match.group(1).strip()
-    if s2_match:
-        detailed = s2_match.group(1).strip()
+    short    = s1_match.group(1).strip() if s1_match else ""
+    detailed = s2_match.group(1).strip() if s2_match else ""
 
-    # Fallback: use first paragraph as short, rest as detailed
     if not short and text:
         paragraphs = [p.strip() for p in text.strip().split("\n\n") if p.strip()]
         if paragraphs:
-            short = paragraphs[0]
+            short    = paragraphs[0]
             detailed = "\n\n".join(paragraphs[1:]) if len(paragraphs) > 1 else paragraphs[0]
 
     return short, detailed
@@ -305,34 +265,23 @@ def run_granite_advisor(
     hedge_result: dict,
     seasonal_outlook: dict,
 ) -> dict:
-    """
-    Granite Call 2: produce plain-language farmer advisory.
-
-    Returns
-    -------
-    dict with:
-      short_summary  : 3-5 sentence plain English summary
-      detailed_narrative : full report text (for PDF)
-      granite_used   : bool
-    """
-    prompt    = _build_advisory_prompt(farm_input, risk_result, hedge_result, seasonal_outlook)
-    raw_text  = _call_granite(prompt, max_tokens=900)
+    prompt       = _build_advisory_prompt(farm_input, risk_result, hedge_result, seasonal_outlook)
+    raw_text     = _call_granite(prompt, max_tokens=900)
     granite_used = bool(raw_text)
 
     if raw_text:
         short, detailed = _parse_granite_response(raw_text)
         if not short or not detailed:
-            # Granite replied but unparseable — use template
             short, detailed = _template_narrative(farm_input, risk_result, hedge_result, seasonal_outlook)
             granite_used = False
-        log.info("Granite advisor: response parsed  granite_used=%s", granite_used)
+        log.info("Granite advisor: parsed  granite_used=%s", granite_used)
     else:
         short, detailed = _template_narrative(farm_input, risk_result, hedge_result, seasonal_outlook)
-        log.info("Granite advisor: fallback to template narrative")
+        log.info("Granite advisor: using template fallback")
 
     return {
-        "short_summary":       short,
-        "detailed_narrative":  detailed,
-        "granite_used":        granite_used,
-        "generated_utc":       datetime.now(timezone.utc).isoformat(),
+        "short_summary":      short,
+        "detailed_narrative": detailed,
+        "granite_used":       granite_used,
+        "generated_utc":      datetime.now(timezone.utc).isoformat(),
     }
