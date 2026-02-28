@@ -538,56 +538,37 @@ def compute_yield_loss_pct(
 ) -> float:
     """
     Translate season stress metrics into yield as % of normal.
-
-    enso_bias is now passed in from seasonal_outlook's regional impact
-    table (not hardcoded corn-belt values). Positive = yield boost,
-    negative = yield suppression.
-
-    Returns yield_pct_of_normal clamped to [20, 105].
+    Returns yield_pct_of_normal clamped to [40, 105].
+    Penalties are capped so hot/dry regions still show year-to-year variance.
     """
     score = 100.0
 
-    # Critical window heat — biggest single factor
-    crit_heat = metrics.get("critical_heat_days", 0)
-    score -= crit_heat * 1.5
-
-    # Extreme heat — additional damage on top of threshold stress
-    extreme = metrics.get("extreme_heat_days", 0)
-    score -= extreme * 1.0
-
-    # General heat outside critical window — cumulative chronic stress
+    # Heat penalties — CAPPED so hot climates don't always hit the floor
+    crit_heat   = metrics.get("critical_heat_days", 0)
+    extreme     = metrics.get("extreme_heat_days", 0)
     general_heat = max(0, metrics.get("heat_stress_days", 0) - crit_heat)
-    score -= general_heat * 0.4
 
-    # Precipitation deficit — nonlinear drought penalty
-    # Skipped entirely for irrigated crops (e.g. Arkansas rice) where
-    # yield stress is driven by heat at heading, not water availability.
+    score -= min(crit_heat * 0.5, 15.0)
+    score -= min(extreme   * 0.3, 8.0)
+    score -= min(general_heat * 0.1, 5.0)
+
+    # Precipitation deficit — only penalize relative to LOCAL historical mean
     irrigated   = crop_params.get("irrigated", False)
     deficit_pct = metrics.get("precip_deficit_pct", 0.0)
     if not irrigated:
-        if deficit_pct < 0:
-            drought_penalty = abs(deficit_pct) * 0.10
-            if abs(deficit_pct) > 30:
-                drought_penalty += (abs(deficit_pct) - 30) * 0.05
-            score -= drought_penalty
-        elif deficit_pct > 20:
-            score -= (deficit_pct - 20) * 0.1   # mild waterlogging penalty
-
-        # Consecutive dry streak — sustained drought worse than scattered dry days
+        if deficit_pct < -20:
+            score -= min(abs(deficit_pct) * 0.08, 10.0)
         dry_streak = metrics.get("consecutive_dry_max", 0)
         if dry_streak > 30:
-            score -= (dry_streak - 30) * 0.1
+            score -= min((dry_streak - 30) * 0.1, 5.0)
 
-    # ENSO regional bias — now from seasonal_outlook regional table
-    # e.g. delta region weak La Nina → -0.04 → score -= 4 points
+    # ENSO regional bias
     score += enso_bias * 100.0
 
-    # Regional drought factor: permanent penalty when local historical mean
-    # precip is below crop optimal. Capped at 25 points max so even very
-    # arid regions still show year-to-year variance.
-    score -= min(regional_drought_factor * 0.2, 8.0)
+    # Regional drought factor — permanent penalty for structurally dry regions
+    score -= min(regional_drought_factor * 0.15, 6.0)
 
-    return round(max(35.0, min(105.0, score)), 2)
+    return round(max(40.0, min(105.0, score)), 2)
 
 
 # ---------------------------------------------------------------------------
